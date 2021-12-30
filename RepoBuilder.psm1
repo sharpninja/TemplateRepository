@@ -1,3 +1,8 @@
+using namespace System
+using namespace System.Collections
+using namespace System.Collections.Generic
+using namespace System.IO
+
 
 class Config {
     [string]$RootFolder
@@ -43,44 +48,49 @@ class Config {
     }
 }
 
+[Config]$Config = $null
+
+$InsertCounter=0
+
+class ActionScript {
+    [int]$Index
+    [string]$Filename
+    [string]$Function
+
+    ActionScript([string]$Filename,
+        [string]$Function)
+        {
+            $this.Index = ($InsertCounter += 1)
+            $this.Filename = $FileName
+            $this.Function = $Function
+        }
+}
+
 class Profile {
     [string]$Name
-    [Hashtable]$Targets
+    [ActionScript[]]$Targets
     [Hashtable]$Options
 
-    Profile(
-        [string]$n,
-        [Hashtable]$t
-    ) {
+    Profile([string]$n,[ActionScript[]]$t) {
         $this.Name = $n
         $this.Targets = $t
+        $this.Options = @{}
+    }
+
+    [ActionScript[]]SortedTargets() {
+        return ($this.Targets | Sort-Object Index)
     }
 }
 
 function Get-AllTargets {
+    $GitScript = [ActionScript]::new('Git.ps1', 'Initialize-Git')
+    $GitHubScript = [ActionScript]::new('GitHub.ps1', 'Initialize-GitHubWorkflow')
+
     $AvailableTargets = @();
-    $AvailableTargets += New-Object -type Profile -ErrorAction Stop -ArgumentList @(`
-            'Blazor-WebApi-EF-DocFx-GitHub'
-        @{
-            'Git.ps1'    = 'Initialize-Git'
-            'GitHub.ps1' = 'Initialize-GitHubWorkflow'
-        })
-    $AvailableTargets += New-Object -type Profile -ErrorAction Stop -ArgumentList @(`
-            'Blazor-WebApi-EF-DocFx-Azure'
-        @{
-            'Git.ps1' = 'Initialize-Git'
-        })
-    $AvailableTargets += New-Object -type Profile -ErrorAction Stop -ArgumentList @(`
-            'Blazor-WebApi-MediatR-DocFx-GitHub'
-        @{
-            'Git.ps1'    = 'Initialize-Git'
-            'GitHub.ps1' = 'Initialize-GitHubWorkflow'
-        })
-    $AvailableTargets += New-Object -type Profile -ErrorAction Stop -ArgumentList @(`
-            'Blazor-WebApi-MediatR-DocFx-Azure'
-        @{
-            'Git.ps1' = 'Initialize-Git'
-        })
+    $AvailableTargets += [Profile]::new('Blazor-WebApi-EF-DocFx-GitHub', @($GitScript, $GitHubScript))
+    $AvailableTargets += [Profile]::new('Blazor-WebApi-EF-DocFx-Azure', @($GitScript))
+    $AvailableTargets += [Profile]::new('Blazor-WebApi-MediatR-DocFx-GitHub', @($GitScript, $GitHubScript))
+    $AvailableTargets += [Profile]::new('Blazor-WebApi-MediatR-DocFx-Azure', @($GitScript))
 
     return $AvailableTargets
 }
@@ -143,7 +153,7 @@ function Initialize-RepoBuilder {
     }
 }
 
-function Invoke-Target([Config]$cfg, [string]$Target) {
+function Invoke-Target([Config]$cfg=$Config, [string]$Target) {
     if ($null -eq $Target) {
         $arguments = @("`$Target", "Invoked `Invoke-Target` with ```$null` ```$Target`"")
 
@@ -169,7 +179,7 @@ function Invoke-Target([Config]$cfg, [string]$Target) {
     }
 }
 
-function Invoke-Dependency([Config]$cfg, $Caller, $Target) {
+function Invoke-Dependency([Config]$cfg=$Config, $Caller, $Target) {
     if ($null -eq $Target) {
         $arguments = @("`$Target", "``$Caller` invoked `Invoke-Dependecy` with ```$null` ```$Target`"")
 
@@ -200,17 +210,24 @@ function Invoke-Dependency([Config]$cfg, $Caller, $Target) {
 }
 
 function Exit-IfFails(
-    [Config]$cfg, 
-    [scriptblock]$scriptBlock = $null,
+    [Config]$cfg = $Config, 
+    [string]$scriptBlock = $null,
     [string]$FailureMessage = 'Failed with exitcode {0} executing: {1}') {
 
     try {
-        & $scriptBlock | Set-Variable -Name 'inf'
+        [string]$inf
+        if($null -ne $cfg) {
+            $block = [scriptblock]::Create("param(`$cfg) $scriptBlock -cfg `$cfg")
+        } else {
+            $block = [scriptblock]::Create($scriptBlock)
+        }
+        Write-Information "[Exit-IfFails] $block"
+        $inf = & $block $cfg
 
         $exitCode = $LASTEXITCODE
 
         if ($null -eq $inf) {
-            $inf = 'Nothing returned on stdout.' 
+            $inf = 'Nothing returned on stdout.'
         }
 
         Write-Information "[$scriptBlock] Exitcode: ${exitCode}, Result: $inf"
@@ -218,7 +235,8 @@ function Exit-IfFails(
         $exitCode = $LASTEXITCODE
 
         if ($exitCode -ne 0) {
-            Write-Error [System.String]::Format($FailureMessage, $exitCode, $scriptBlock)
+            $e = [System.String]::Format($FailureMessage, $exitCode, $scriptBlock)
+            Write-Error $e
             exit $exitCode
         }
     }
@@ -231,8 +249,8 @@ function Exit-IfFails(
         exit $exitCode
     }
 }
-
-function Set-RootLocation([Config]$cfg) {
+$config
+function Set-RootLocation([Config]$cfg = $Config) {
     $root = $cfg.RootFolder
     if ($null -eq $root) {
         throw "`$cfg.RootFolder is `$null."
@@ -317,6 +335,8 @@ function Invoke-Profile {
                         -Confirm:$Confirm `
                         -Verbose:$Verbose
 
+        $config=$cfg
+
         if ($Verbose) {
             '======================'
             'Parameters'
@@ -337,22 +357,26 @@ function Invoke-Profile {
         $names = Get-AvailableProfiles;
 
         if ($names.Contains($profileName)) {
+            $AvailableTargets = Get-AllTargets
             $selectedProfile = $AvailableTargets[$names.IndexOf($profileName)]
             $results = @()
 
             Write-Information "Using profile: $selectedProfile"
 
-            [System.Collections.IEnumerator]$enumerator = $selectedProfile.Targets.GetEnumerator()
+            [IEnumerator]$enumerator = $selectedProfile.SortedTargets().GetEnumerator()
             while ($enumerator.MoveNext()) {
-                [Hashtable]$target = $enumerator.Current
-                $script = $target.Key
-                $function = $target.Value
+                Set-Location $cfg.RootFolder
+
+                [ActionScript]$target = $enumerator.Current
+                $script = $target.Filename
+                $function = $target.Function
+                $script = Join-Path $PSScriptRoot -ChildPath $script
                 if (Test-Path $script) {
                     Write-Verbose -Message '[Invoke-Profile] Loading ``$script``'
                     . $script
                     Write-Verbose -Message '[Invoke-Profile] Invoking ``$function``'
                     try {
-                        Exit-IfFails -ScriptBlock $function -Config $cfg | Set-Variable -Name result
+                        $result = Exit-IfFails -ScriptBlock $function -Cfg $cfg
                         $results += "[$function]: Returned: $result"
                         Write-Information $result
                     }

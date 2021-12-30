@@ -4,7 +4,7 @@ function Initialize-GitHubWorkflow([Config]$cfg) {
     try {
         $invocation = $MyInvocation.MyCommand
         Write-Verbose -Verbose:$cfg.Verbose -Message "[$invocation] Entered"
-        Set-RootLocation
+        Set-RootLocation -Cfg $cfg
         . ./Git.ps1
         Invoke-Dependency -Target Initialize-Git -Caller $invocation
 

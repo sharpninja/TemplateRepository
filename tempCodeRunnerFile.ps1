@@ -1,0 +1,1 @@
+$cfg.FinishedStages | Format-Table -AutoSize
